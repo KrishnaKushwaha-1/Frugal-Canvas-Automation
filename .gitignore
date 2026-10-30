@@ -1,0 +1,27 @@
+﻿# Maven
+target/
+
+# Node.js
+testbed/node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+artifacts/logs/*
+
+# Generated reports
+artifacts/reports/*
+
+# Screenshots
+artifacts/screenshots/*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Java
+*.class

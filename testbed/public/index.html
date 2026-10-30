@@ -1,0 +1,386 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frugal Testing - Canvas WebSocket Testbed</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 30px;
+            background: #f1f5f9;
+            color: #0f172a;
+            font-family: Arial, sans-serif;
+        }
+
+        main {
+            max-width: 900px;
+            margin: auto;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+        }
+
+        #connection {
+            margin: 16px 0;
+            font-weight: bold;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+            margin: 20px auto;
+            border: 2px solid #334155;
+            border-radius: 8px;
+            cursor: crosshair;
+            touch-action: none;
+        }
+
+        #status {
+            padding: 12px;
+            background: white;
+            border-radius: 8px;
+            margin-top: 16px;
+        }
+
+        #eventLog {
+            margin-top: 16px;
+            padding: 12px;
+            background: #0f172a;
+            color: #86efac;
+            text-align: left;
+            min-height: 100px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+<main>
+    <h1>Canvas WebSocket Testbed</h1>
+    <p>Frugal Testing - Q1 Automation Environment</p>
+
+    <div id="connection">Connecting to WebSocket...</div>
+
+    <canvas id="canvas" width="800" height="450"></canvas>
+
+    <div id="status">Waiting for canvas state...</div>
+
+    <div id="eventLog">Interaction log:</div>
+</main>
+
+<script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+
+    const connectionElement = document.getElementById("connection");
+    const statusElement = document.getElementById("status");
+    const eventLog = document.getElementById("eventLog");
+
+    let canvasState = "loading";
+    let target = { x: 400, y: 225, radius: 30 };
+    let pointerStart = null;
+    let hoverReported = false;
+
+    // Tracks incoming canvas-state updates.
+    // The Java test uses this to detect stale canvas frames.
+    window.canvasStateVersion = 0;
+
+    // Tracks pixel validation and first interaction timing.
+    window.canvasTiming = {
+        pixelValidatedAt: null,
+        firstInteractionAt: null,
+        interactionDelayMs: null
+    };
+
+    window.recordPixelValidation = function(timestamp) {
+        window.canvasTiming.pixelValidatedAt = timestamp;
+    };
+
+    window.recordFirstInteraction = function() {
+        if (window.canvasTiming.firstInteractionAt === null) {
+
+            window.canvasTiming.firstInteractionAt =
+                performance.now();
+
+            window.canvasTiming.interactionDelayMs =
+                window.canvasTiming.firstInteractionAt -
+                window.canvasTiming.pixelValidatedAt;
+
+            console.log(
+                "[TIMING] Pixel-to-interaction delay:",
+                window.canvasTiming.interactionDelayMs,
+                "ms"
+            );
+        }
+    };
+
+// Mathematical state used by corrupted-state tests.
+window.mathState = null;
+window.mathStateError = null;
+
+function validateMathematicalState(rawText, data) {
+
+    const match = rawText.match(
+        /"balance"\s*:\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/ 
+    );
+
+    let error = null;
+
+    if (!match) {
+        error = {
+            code: "INVALID_BALANCE_FORMAT",
+            field: "balance",
+            reason: "MISSING_OR_INVALID_NUMERIC_VALUE"
+        };
+    } else {
+        const rawBalance = match[1];
+
+        if (/[eE]/.test(rawBalance)) {
+            error = {
+                code: "INVALID_MATHEMATICAL_STATE",
+                field: "balance",
+                reason: "SCIENTIFIC_NOTATION",
+                rawValue: rawBalance
+            };
+        } else if (rawBalance.includes(".")) {
+            error = {
+                code: "INVALID_MATHEMATICAL_STATE",
+                field: "balance",
+                reason: "FRACTIONAL_VALUE",
+                rawValue: rawBalance
+            };
+        } else if (
+            !Number.isSafeInteger(data.balance) ||
+            data.balance < 0
+        ) {
+            error = {
+                code: "INVALID_MATHEMATICAL_STATE",
+                field: "balance",
+                reason: "NEGATIVE_OR_UNSAFE_INTEGER",
+                rawValue: rawBalance
+            };
+        }
+    }
+
+    if (error) {
+        window.mathStateError = error;
+
+        console.error("[MATHEMATICAL STATE REJECTED]", error);
+
+        logEvent(
+            "Mathematical state rejected: " +
+            error.code + " | " + error.reason
+        );
+
+        return false;
+    }
+
+    window.mathState = {
+        balance: data.balance
+    };
+
+    window.mathStateError = null;
+
+    console.log("[MATHEMATICAL STATE ACCEPTED]", window.mathState);
+
+    return true;
+}
+
+
+
+    function logEvent(message) {
+        eventLog.textContent += "\n" + message;
+    }
+
+    function drawCanvas(color) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw the full canvas using the received state color.
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (canvasState === "active") {
+            ctx.beginPath();
+            ctx.arc(target.x, target.y, target.radius, 0, Math.PI * 2);
+            ctx.fillStyle = "#1d4ed8";
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(target.x, target.y, 7, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+        }
+    }
+
+    function sendAction(action, coordinates = {}) {
+        if (socket.readyState !== WebSocket.OPEN) {
+            logEvent("Action not sent: WebSocket is not open");
+            return;
+        }
+
+        socket.send(JSON.stringify({
+            type: "canvas-action",
+            action,
+            ...coordinates,
+            timestamp: performance.now()
+        }));
+    }
+
+    // Start in the gray loading state.
+    drawCanvas("#808080");
+
+    const socket = new WebSocket(
+        `ws://${window.location.host}`
+    );
+
+    socket.addEventListener("open", () => {
+        connectionElement.textContent = "WebSocket: Connected";
+        logEvent("WebSocket connected");
+    });
+
+  socket.addEventListener("message", (event) => {
+
+    let data;
+
+    try {
+        data = JSON.parse(event.data);
+    } catch (error) {
+        logEvent("Received invalid JSON");
+        return;
+    }
+
+    // Validate mathematical state before accepting it.
+    if (data.type === "account-state") {
+
+        validateMathematicalState(event.data, data);
+
+        return;
+    }
+
+    if (data.type === "canvas-state") {
+
+        window.canvasStateVersion++;
+
+        console.log(
+            "[CANVAS FRAME]",
+            "Version:", window.canvasStateVersion,
+            "Status:", data.status
+        );
+
+        canvasState = data.status;
+
+        if (data.target) {
+            target = data.target;
+        }
+
+        statusElement.textContent = data.message;
+
+        drawCanvas(data.color);
+
+        logEvent(
+            `Canvas state changed to: ${data.status} | Version: ${window.canvasStateVersion}`
+        );
+    }
+
+    if (data.type === "action-ack") {
+        logEvent(`Server acknowledged: ${data.action}`);
+    }
+
+    if (data.type === "error") {
+        logEvent(`Server error: ${data.code}`);
+    }
+});
+
+    socket.addEventListener("close", () => {
+        connectionElement.textContent = "WebSocket: Disconnected";
+        logEvent("WebSocket disconnected");
+    });
+
+    socket.addEventListener("error", () => {
+        connectionElement.textContent = "WebSocket: Connection error";
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+        window.recordFirstInteraction();
+
+        const rect = canvas.getBoundingClientRect();
+
+        const x = (event.clientX - rect.left) * canvas.width / rect.width;
+        const y = (event.clientY - rect.top) * canvas.height / rect.height;
+
+        if (!hoverReported && canvasState === "active") {
+            hoverReported = true;
+
+            sendAction("hover", { x, y });
+
+            logEvent("Pointer hover detected");
+        }
+    });
+
+    canvas.addEventListener("pointerdown", (event) => {
+        if (canvasState !== "active") return;
+
+        const rect = canvas.getBoundingClientRect();
+
+        pointerStart = {
+            x: (event.clientX - rect.left) * canvas.width / rect.width,
+            y: (event.clientY - rect.top) * canvas.height / rect.height
+        };
+
+        canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener("pointerup", (event) => {
+        if (!pointerStart) return;
+
+        const rect = canvas.getBoundingClientRect();
+
+        const end = {
+            x: (event.clientX - rect.left) * canvas.width / rect.width,
+            y: (event.clientY - rect.top) * canvas.height / rect.height
+        };
+
+        const deltaX = end.x - pointerStart.x;
+        const deltaY = end.y - pointerStart.y;
+
+        if (Math.abs(deltaX) >= 1 || Math.abs(deltaY) >= 1) {
+            sendAction("drag", {
+                from: pointerStart,
+                to: end,
+                deltaX,
+                deltaY
+            });
+
+            logEvent(`Drag detected: X=${deltaX.toFixed(1)}px`);
+        }
+
+        pointerStart = null;
+    });
+
+    canvas.addEventListener("click", (event) => {
+        if (canvasState !== "active") return;
+
+        const rect = canvas.getBoundingClientRect();
+
+        const x = (event.clientX - rect.left) * canvas.width / rect.width;
+        const y = (event.clientY - rect.top) * canvas.height / rect.height;
+
+        sendAction("click", { x, y });
+
+        logEvent(`Canvas click: (${x.toFixed(1)}, ${y.toFixed(1)})`);
+    });
+</script>
+</body>
+</html>
