@@ -94,7 +94,7 @@
     let hoverReported = false;
 
     // Tracks incoming canvas-state updates.
-    // The Java test uses this to detect stale canvas frames.
+    // Java automation uses this to detect stale frames.
     window.canvasStateVersion = 0;
 
     // Tracks pixel validation and first interaction timing.
@@ -126,107 +126,255 @@
         }
     };
 
-// Mathematical state used by corrupted-state tests.
-window.mathState = null;
-window.mathStateError = null;
+    // =========================================================
+    // MATHEMATICAL STATE VALIDATION AND EXCEPTION BOUNDARY
+    // =========================================================
 
-function validateMathematicalState(rawText, data) {
+    window.mathState = null;
+    window.mathStateError = null;
 
-    const match = rawText.match(
-        /"balance"\s*:\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/ 
-    );
+    // Exception-boundary observability for automated tests.
+    window.mathStateExceptionCaught = false;
+    window.mathStateExceptionCount = 0;
+    window.mathStateLastExceptionName = null;
 
-    let error = null;
+    /**
+     * Typed exception for invalid mathematical state.
+     */
+    class MathematicalStateException extends Error {
 
-    if (!match) {
-        error = {
-            code: "INVALID_BALANCE_FORMAT",
-            field: "balance",
-            reason: "MISSING_OR_INVALID_NUMERIC_VALUE"
-        };
-    } else {
-        const rawBalance = match[1];
+        constructor(code, field, reason, rawValue = null) {
 
-        if (/[eE]/.test(rawBalance)) {
-            error = {
-                code: "INVALID_MATHEMATICAL_STATE",
-                field: "balance",
-                reason: "SCIENTIFIC_NOTATION",
-                rawValue: rawBalance
-            };
-        } else if (rawBalance.includes(".")) {
-            error = {
-                code: "INVALID_MATHEMATICAL_STATE",
-                field: "balance",
-                reason: "FRACTIONAL_VALUE",
-                rawValue: rawBalance
-            };
-        } else if (
-            !Number.isSafeInteger(data.balance) ||
-            data.balance < 0
-        ) {
-            error = {
-                code: "INVALID_MATHEMATICAL_STATE",
-                field: "balance",
-                reason: "NEGATIVE_OR_UNSAFE_INTEGER",
-                rawValue: rawBalance
-            };
+            super(`Invalid mathematical state: ${reason}`);
+
+            this.name = "MathematicalStateException";
+            this.code = code;
+            this.field = field;
+            this.reason = reason;
+            this.rawValue = rawValue;
         }
     }
 
-    if (error) {
-        window.mathStateError = error;
+    /**
+     * Validates the raw balance representation.
+     *
+     * Invalid mathematical values throw a typed exception.
+     * Valid values are returned without modifying application state.
+     */
+    function validateMathematicalState(rawText, data) {
 
-        console.error("[MATHEMATICAL STATE REJECTED]", error);
-
-        logEvent(
-            "Mathematical state rejected: " +
-            error.code + " | " + error.reason
+        const match = rawText.match(
+            /"balance"\s*:\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/
         );
 
-        return false;
+        if (!match) {
+
+            throw new MathematicalStateException(
+                "INVALID_BALANCE_FORMAT",
+                "balance",
+                "MISSING_OR_INVALID_NUMERIC_VALUE"
+            );
+        }
+
+        const rawBalance = match[1];
+
+        // Reject scientific notation.
+        if (/[eE]/.test(rawBalance)) {
+
+            throw new MathematicalStateException(
+                "INVALID_MATHEMATICAL_STATE",
+                "balance",
+                "SCIENTIFIC_NOTATION",
+                rawBalance
+            );
+        }
+
+        // Reject fractional balances.
+        if (rawBalance.includes(".")) {
+
+            throw new MathematicalStateException(
+                "INVALID_MATHEMATICAL_STATE",
+                "balance",
+                "FRACTIONAL_VALUE",
+                rawBalance
+            );
+        }
+
+        // Reject negative and unsafe integer values.
+        if (
+            !Number.isSafeInteger(data.balance) ||
+            data.balance < 0
+        ) {
+
+            throw new MathematicalStateException(
+                "INVALID_MATHEMATICAL_STATE",
+                "balance",
+                "NEGATIVE_OR_UNSAFE_INTEGER",
+                rawBalance
+            );
+        }
+
+        return {
+            balance: data.balance
+        };
     }
 
-    window.mathState = {
-        balance: data.balance
-    };
+    /**
+     * Structured exception boundary.
+     *
+     * Catches mathematical validation exceptions,
+     * records structured error information,
+     * and preserves the previously accepted state.
+     */
+    function processMathematicalState(rawText, data) {
 
-    window.mathStateError = null;
+        try {
 
-    console.log("[MATHEMATICAL STATE ACCEPTED]", window.mathState);
+            const validatedState =
+                validateMathematicalState(rawText, data);
 
-    return true;
-}
+            // Update application state only after successful validation.
+            window.mathState = validatedState;
 
+            window.mathStateError = null;
 
+            console.log(
+                "[MATHEMATICAL STATE ACCEPTED]",
+                window.mathState
+            );
+
+            logEvent("Mathematical state accepted.");
+
+            return true;
+
+        } catch (error) {
+
+            let structuredError;
+
+            if (error instanceof MathematicalStateException) {
+
+                structuredError = {
+                    code: error.code,
+                    field: error.field,
+                    reason: error.reason,
+                    rawValue: error.rawValue
+                };
+
+            } else {
+
+                structuredError = {
+                    code: "MATHEMATICAL_STATE_PROCESSING_ERROR",
+                    field: "balance",
+                    reason: "UNEXPECTED_VALIDATION_ERROR",
+                    rawValue: null
+                };
+
+                console.error(
+                    "[UNEXPECTED MATHEMATICAL STATE ERROR]",
+                    error
+                );
+            }
+
+            // Preserve previous valid mathematical state.
+            window.mathStateError = structuredError;
+
+            // Record exception-boundary execution.
+            window.mathStateExceptionCaught = true;
+
+            window.mathStateExceptionCount++;
+
+            window.mathStateLastExceptionName = error.name;
+
+            console.error(
+                "[MATHEMATICAL EXCEPTION BOUNDARY CAUGHT]",
+                structuredError
+            );
+
+            logEvent(
+                "Mathematical state rejected: " +
+                structuredError.code +
+                " | " +
+                structuredError.reason
+            );
+
+            return false;
+        }
+    }
+
+    // =========================================================
+    // GENERAL EVENT LOGGING
+    // =========================================================
 
     function logEvent(message) {
+
         eventLog.textContent += "\n" + message;
     }
 
-    function drawCanvas(color) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // =========================================================
+    // CANVAS RENDERING
+    // =========================================================
 
-        // Draw the full canvas using the received state color.
+    function drawCanvas(color) {
+
+        ctx.clearRect(
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
+
+        // Draw full canvas using received state color.
         ctx.fillStyle = color;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillRect(
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
 
         if (canvasState === "active") {
+
             ctx.beginPath();
-            ctx.arc(target.x, target.y, target.radius, 0, Math.PI * 2);
+
+            ctx.arc(
+                target.x,
+                target.y,
+                target.radius,
+                0,
+                Math.PI * 2
+            );
+
             ctx.fillStyle = "#1d4ed8";
             ctx.fill();
 
             ctx.beginPath();
-            ctx.arc(target.x, target.y, 7, 0, Math.PI * 2);
+
+            ctx.arc(
+                target.x,
+                target.y,
+                7,
+                0,
+                Math.PI * 2
+            );
+
             ctx.fillStyle = "#ffffff";
             ctx.fill();
         }
     }
 
+    // =========================================================
+    // WEBSOCKET COMMUNICATION
+    // =========================================================
+
     function sendAction(action, coordinates = {}) {
+
         if (socket.readyState !== WebSocket.OPEN) {
-            logEvent("Action not sent: WebSocket is not open");
+
+            logEvent(
+                "Action not sent: WebSocket is not open"
+            );
+
             return;
         }
 
@@ -238,7 +386,7 @@ function validateMathematicalState(rawText, data) {
         }));
     }
 
-    // Start in the gray loading state.
+    // Start in gray loading state.
     drawCanvas("#808080");
 
     const socket = new WebSocket(
@@ -246,81 +394,142 @@ function validateMathematicalState(rawText, data) {
     );
 
     socket.addEventListener("open", () => {
-        connectionElement.textContent = "WebSocket: Connected";
+
+        connectionElement.textContent =
+            "WebSocket: Connected";
+
         logEvent("WebSocket connected");
     });
 
-  socket.addEventListener("message", (event) => {
+    // =========================================================
+    // WEBSOCKET MESSAGE HANDLING
+    // =========================================================
 
-    let data;
+    socket.addEventListener("message", (event) => {
 
-    try {
-        data = JSON.parse(event.data);
-    } catch (error) {
-        logEvent("Received invalid JSON");
-        return;
-    }
+        let data;
 
-    // Validate mathematical state before accepting it.
-    if (data.type === "account-state") {
+        try {
 
-        validateMathematicalState(event.data, data);
+            data = JSON.parse(event.data);
 
-        return;
-    }
+        } catch (error) {
 
-    if (data.type === "canvas-state") {
+            logEvent("Received invalid JSON");
 
-        window.canvasStateVersion++;
-
-        console.log(
-            "[CANVAS FRAME]",
-            "Version:", window.canvasStateVersion,
-            "Status:", data.status
-        );
-
-        canvasState = data.status;
-
-        if (data.target) {
-            target = data.target;
+            return;
         }
 
-        statusElement.textContent = data.message;
+        // -----------------------------------------------------
+        // MATHEMATICAL STATE PROCESSING
+        // -----------------------------------------------------
 
-        drawCanvas(data.color);
+        if (data.type === "account-state") {
 
-        logEvent(
-            `Canvas state changed to: ${data.status} | Version: ${window.canvasStateVersion}`
-        );
-    }
+            const accepted = processMathematicalState(
+                event.data,
+                data
+            );
 
-    if (data.type === "action-ack") {
-        logEvent(`Server acknowledged: ${data.action}`);
-    }
+            if (!accepted) {
 
-    if (data.type === "error") {
-        logEvent(`Server error: ${data.code}`);
-    }
-});
+                console.warn(
+                    "[ACCOUNT STATE REJECTED]",
+                    window.mathStateError
+                );
+            }
+
+            return;
+        }
+
+        // -----------------------------------------------------
+        // CANVAS STATE PROCESSING
+        // -----------------------------------------------------
+
+        if (data.type === "canvas-state") {
+
+            window.canvasStateVersion++;
+
+            console.log(
+                "[CANVAS FRAME]",
+                "Version:",
+                window.canvasStateVersion,
+                "Status:",
+                data.status
+            );
+
+            canvasState = data.status;
+
+            if (data.target) {
+                target = data.target;
+            }
+
+            statusElement.textContent = data.message;
+
+            drawCanvas(data.color);
+
+            logEvent(
+                `Canvas state changed to: ${data.status} | Version: ${window.canvasStateVersion}`
+            );
+        }
+
+        // -----------------------------------------------------
+        // ACTION ACKNOWLEDGEMENT
+        // -----------------------------------------------------
+
+        if (data.type === "action-ack") {
+
+            logEvent(
+                `Server acknowledged: ${data.action}`
+            );
+        }
+
+        // -----------------------------------------------------
+        // SERVER ERROR
+        // -----------------------------------------------------
+
+        if (data.type === "error") {
+
+            logEvent(
+                `Server error: ${data.code}`
+            );
+        }
+    });
 
     socket.addEventListener("close", () => {
-        connectionElement.textContent = "WebSocket: Disconnected";
+
+        connectionElement.textContent =
+            "WebSocket: Disconnected";
+
         logEvent("WebSocket disconnected");
     });
 
     socket.addEventListener("error", () => {
-        connectionElement.textContent = "WebSocket: Connection error";
+
+        connectionElement.textContent =
+            "WebSocket: Connection error";
     });
 
+    // =========================================================
+    // POINTER AND CANVAS INTERACTIONS
+    // =========================================================
+
     canvas.addEventListener("pointermove", (event) => {
+
         window.recordFirstInteraction();
 
         const rect = canvas.getBoundingClientRect();
 
-        const x = (event.clientX - rect.left) * canvas.width / rect.width;
-        const y = (event.clientY - rect.top) * canvas.height / rect.height;
+        const x =
+            (event.clientX - rect.left) *
+            canvas.width / rect.width;
+
+        const y =
+            (event.clientY - rect.top) *
+            canvas.height / rect.height;
 
         if (!hoverReported && canvasState === "active") {
+
             hoverReported = true;
 
             sendAction("hover", { x, y });
@@ -330,57 +539,87 @@ function validateMathematicalState(rawText, data) {
     });
 
     canvas.addEventListener("pointerdown", (event) => {
+
         if (canvasState !== "active") return;
 
         const rect = canvas.getBoundingClientRect();
 
         pointerStart = {
-            x: (event.clientX - rect.left) * canvas.width / rect.width,
-            y: (event.clientY - rect.top) * canvas.height / rect.height
+
+            x:
+                (event.clientX - rect.left) *
+                canvas.width / rect.width,
+
+            y:
+                (event.clientY - rect.top) *
+                canvas.height / rect.height
         };
 
         canvas.setPointerCapture(event.pointerId);
     });
 
     canvas.addEventListener("pointerup", (event) => {
+
         if (!pointerStart) return;
 
         const rect = canvas.getBoundingClientRect();
 
         const end = {
-            x: (event.clientX - rect.left) * canvas.width / rect.width,
-            y: (event.clientY - rect.top) * canvas.height / rect.height
+
+            x:
+                (event.clientX - rect.left) *
+                canvas.width / rect.width,
+
+            y:
+                (event.clientY - rect.top) *
+                canvas.height / rect.height
         };
 
         const deltaX = end.x - pointerStart.x;
         const deltaY = end.y - pointerStart.y;
 
-        if (Math.abs(deltaX) >= 1 || Math.abs(deltaY) >= 1) {
+        if (
+            Math.abs(deltaX) >= 1 ||
+            Math.abs(deltaY) >= 1
+        ) {
+
             sendAction("drag", {
+
                 from: pointerStart,
                 to: end,
                 deltaX,
                 deltaY
             });
 
-            logEvent(`Drag detected: X=${deltaX.toFixed(1)}px`);
+            logEvent(
+                `Drag detected: X=${deltaX.toFixed(1)}px`
+            );
         }
 
         pointerStart = null;
     });
 
     canvas.addEventListener("click", (event) => {
+
         if (canvasState !== "active") return;
 
         const rect = canvas.getBoundingClientRect();
 
-        const x = (event.clientX - rect.left) * canvas.width / rect.width;
-        const y = (event.clientY - rect.top) * canvas.height / rect.height;
+        const x =
+            (event.clientX - rect.left) *
+            canvas.width / rect.width;
+
+        const y =
+            (event.clientY - rect.top) *
+            canvas.height / rect.height;
 
         sendAction("click", { x, y });
 
-        logEvent(`Canvas click: (${x.toFixed(1)}, ${y.toFixed(1)})`);
+        logEvent(
+            `Canvas click: (${x.toFixed(1)}, ${y.toFixed(1)})`
+        );
     });
+
 </script>
 </body>
 </html>

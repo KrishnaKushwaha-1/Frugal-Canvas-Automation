@@ -108,30 +108,52 @@ class CorruptedMathStateTest {
 
                 page.navigate(APP_URL);
 
-                // Wait for the frontend's structured rejection.
+                /*
+                 * Wait until:
+                 * 1. A valid mathematical state is accepted.
+                 * 2. A structured error is recorded.
+                 * 3. The exception boundary confirms it caught an exception.
+                 */
                 page.waitForFunction(
                         """
                         () =>
+                            window.mathState !== null &&
                             window.mathStateError !== null &&
-                            window.mathState !== null
+                            window.mathStateExceptionCaught === true &&
+                            window.mathStateExceptionCount === 1 &&
+                            window.mathStateLastExceptionName ===
+                                "MathematicalStateException"
                         """,
                         null,
                         new Page.WaitForFunctionOptions()
                                 .setTimeout(10000)
                 );
 
+                /*
+                 * Read all frontend validation and exception-boundary
+                 * information in one browser evaluation.
+                 */
                 @SuppressWarnings("unchecked")
                 Map<String, Object> result =
                         (Map<String, Object>) page.evaluate(
                                 """
                                 () => ({
                                     state: window.mathState,
-                                    error: window.mathStateError
+                                    error: window.mathStateError,
+                                    exceptionCaught:
+                                        window.mathStateExceptionCaught,
+                                    exceptionCount:
+                                        window.mathStateExceptionCount,
+                                    exceptionName:
+                                        window.mathStateLastExceptionName
                                 })
                                 """
                         );
 
-                assertNotNull(result, "Frontend result is missing");
+                assertNotNull(
+                        result,
+                        "Frontend result is missing"
+                );
 
                 @SuppressWarnings("unchecked")
                 Map<String, Object> acceptedState =
@@ -151,28 +173,87 @@ class CorruptedMathStateTest {
                         "Corrupted mathematical state must produce an error"
                 );
 
-                // Verify that the previous valid balance was not overwritten.
+                // -------------------------------------------------
+                // 1. Verify previous valid state is preserved.
+                // -------------------------------------------------
+
                 assertEquals(
                         1000,
                         ((Number) acceptedState.get("balance")).intValue(),
                         "Corrupted state must not overwrite valid balance"
                 );
 
-                // Verify structured error information.
+                System.out.println(
+                        "[STATE PROTECTION VERIFIED] Balance remains 1000"
+                );
+
+                // -------------------------------------------------
+                // 2. Verify structured exception information.
+                // -------------------------------------------------
+
                 assertEquals(
                         "INVALID_MATHEMATICAL_STATE",
-                        error.get("code")
+                        error.get("code"),
+                        "Incorrect mathematical-state error code"
                 );
 
                 assertEquals(
                         "balance",
-                        error.get("field")
+                        error.get("field"),
+                        "Incorrect error field"
                 );
 
                 assertEquals(
                         expectedReason,
-                        error.get("reason")
+                        error.get("reason"),
+                        "Incorrect mathematical validation reason"
                 );
+
+                assertEquals(
+                        corruptedBalance,
+                        error.get("rawValue"),
+                        "Incorrect corrupted raw value"
+                );
+
+                System.out.println(
+                        "[STRUCTURED ERROR VERIFIED] " + error
+                );
+
+                // -------------------------------------------------
+                // 3. Verify the actual exception boundary.
+                // -------------------------------------------------
+
+                assertEquals(
+                        Boolean.TRUE,
+                        result.get("exceptionCaught"),
+                        "Exception boundary did not catch the exception"
+                );
+
+                assertEquals(
+                        1,
+                        ((Number) result.get("exceptionCount")).intValue(),
+                        "Expected exactly one caught exception"
+                );
+
+                assertEquals(
+                        "MathematicalStateException",
+                        result.get("exceptionName"),
+                        "Incorrect exception type"
+                );
+
+                System.out.println(
+                        "[EXCEPTION BOUNDARY VERIFIED] "
+                                + result.get("exceptionName")
+                );
+
+                System.out.println(
+                        "[EXCEPTION COUNT VERIFIED] "
+                                + result.get("exceptionCount")
+                );
+
+                // -------------------------------------------------
+                // 4. Verify WebSocket injection occurred.
+                // -------------------------------------------------
 
                 assertTrue(
                         injectionCompleted.get(),
@@ -180,14 +261,15 @@ class CorruptedMathStateTest {
                 );
 
                 System.out.println(
-                        "[STRUCTURED ERROR VERIFIED] " + error
+                        "[INJECTION VERIFIED] Corrupted state delivered"
                 );
 
                 System.out.println(
-                        "[STATE PROTECTION VERIFIED] Balance remains 1000"
+                        "[TEST PASSED] " + expectedReason
                 );
 
             } finally {
+
                 browser.close();
             }
         }
