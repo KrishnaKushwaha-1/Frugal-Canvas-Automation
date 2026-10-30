@@ -35,6 +35,7 @@ frugal-q1-canvas-automation/
 │   ├── main/
 │   │   └── java/
 │   │       └── com/frugal/canvas/
+|   |           └── App.java
 │   │           └── CanvasCircuitBreaker.java
 │   │
 │   └── test/
